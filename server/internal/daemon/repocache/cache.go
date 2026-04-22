@@ -588,6 +588,7 @@ func getLocalDefaultBranch(repoPath string) string {
 }
 
 // getRemoteDefaultBranch resolves the default branch for a bare-clone cache.
+func getRemoteDefaultBranch(barePath string) string {
 	// 1) Primary: refs/remotes/origin/HEAD set by `git remote set-head
 	//    origin --auto` during ensureRemoteTrackingLayout. Verify the
 	//    target actually exists — a partial set-head or a manually-broken

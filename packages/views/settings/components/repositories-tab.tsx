@@ -72,7 +72,7 @@ export function RepositoriesTab({ onBrowseLocalPath }: RepositoriesTabProps) {
   };
 
   const handleLinkTypeChange = (index: number, linkType: RepoLinkType) => {
-    setRepos(repos.map((r, i) => (i === index ? { ...r, link_type: linkType, url: "" } : r)));
+    setRepos(repos.map((r, i) => (i === index ? { ...r, link_type: linkType } : r)));
   };
 
   const handleBrowse = async (index: number) => {
@@ -106,7 +106,7 @@ export function RepositoriesTab({ onBrowseLocalPath }: RepositoriesTabProps) {
                     <div className="flex gap-1.5">
                       <Select
                         value={linkType}
-                        onValueChange={(v) => { if (v) handleLinkTypeChange(index, v as RepoLinkType); }}
+                        onValueChange={(v) => { if (v === "remote" || v === "local") handleLinkTypeChange(index, v); }}
                         disabled={!canManageWorkspace}
                       >
                         <SelectTrigger size="sm" className="w-[110px] shrink-0">

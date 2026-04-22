@@ -85,9 +85,15 @@ func (c *Cache) Sync(workspaceID string, repos []RepoInfo) error {
 		}
 
 		// Local repos point at an on-disk git directory — skip bare-clone
-		// caching. Validate that the path exists and is a git repo.
+		// caching. Validate that the path is absolute and is a git repo.
 		if repo.LinkType == "local" {
-			if !isGitRepo(repo.URL) {
+			cleanPath := filepath.Clean(repo.URL)
+			if !filepath.IsAbs(cleanPath) {
+				c.logger.Warn("repo cache: local path must be absolute", "path", repo.URL)
+				if firstErr == nil {
+					firstErr = fmt.Errorf("local path must be absolute: %s", repo.URL)
+				}
+			} else if !IsGitRepo(cleanPath) {
 				c.logger.Warn("repo cache: local path is not a git repo", "path", repo.URL)
 				if firstErr == nil {
 					firstErr = fmt.Errorf("local path is not a git repo: %s", repo.URL)
@@ -172,8 +178,8 @@ func isBareRepo(path string) bool {
 	return err == nil
 }
 
-// isGitRepo checks if a path is a git repository (bare or with a .git directory).
-func isGitRepo(path string) bool {
+// IsGitRepo checks if a path is a git repository (bare or with a .git directory).
+func IsGitRepo(path string) bool {
 	if isBareRepo(path) {
 		return true
 	}
@@ -183,11 +189,6 @@ func isGitRepo(path string) bool {
 		return false
 	}
 	return info.IsDir() || info.Mode().IsRegular()
-}
-
-// IsGitRepo is the exported version of isGitRepo for use by other packages.
-func IsGitRepo(path string) bool {
-	return isGitRepo(path)
 }
 
 // modernFetchRefspec is the remote-tracking refspec that keeps fetched heads
@@ -337,11 +338,15 @@ func (c *Cache) CreateWorktree(params WorktreeParams) (*WorktreeResult, error) {
 	var barePath string
 
 	if params.LinkType == "local" {
-		// Local repo: use the path directly as the git root.
-		if !isGitRepo(params.RepoURL) {
+		// Local repo: validate the path is absolute and use it as the git root.
+		cleanPath := filepath.Clean(params.RepoURL)
+		if !filepath.IsAbs(cleanPath) {
+			return nil, fmt.Errorf("local repo path must be absolute: %s", params.RepoURL)
+		}
+		if !IsGitRepo(cleanPath) {
 			return nil, fmt.Errorf("local path is not a git repo: %s", params.RepoURL)
 		}
-		barePath = params.RepoURL
+		barePath = cleanPath
 	} else {
 		barePath = c.Lookup(params.WorkspaceID, params.RepoURL)
 		if barePath == "" {
@@ -563,24 +568,22 @@ func updateExistingWorktree(worktreePath, branchName, baseRef string) (string, e
 // repository by reading HEAD. Returns the symbolic ref (e.g. "refs/heads/main")
 // or "" if HEAD cannot be resolved.
 func getLocalDefaultBranch(repoPath string) string {
-	// For a non-bare repo, resolve the .git directory first.
-	gitDir := repoPath
-	gitPath := filepath.Join(repoPath, ".git")
-	if info, err := os.Stat(gitPath); err == nil && info.IsDir() {
-		gitDir = repoPath // git commands work on the working directory
+	// Validate the path is absolute to prevent path traversal.
+	if !filepath.IsAbs(repoPath) {
+		return ""
 	}
 	// Read the symbolic ref from HEAD.
-	if out, err := exec.Command("git", "-C", gitDir, "symbolic-ref", "HEAD").Output(); err == nil {
+	if out, err := exec.Command("git", "-C", repoPath, "symbolic-ref", "HEAD").Output(); err == nil {
 		ref := strings.TrimSpace(string(out))
 		if ref != "" {
-			if err := exec.Command("git", "-C", gitDir, "rev-parse", "--verify", ref).Run(); err == nil {
+			if err := exec.Command("git", "-C", repoPath, "rev-parse", "--verify", ref).Run(); err == nil {
 				return ref
 			}
 		}
 	}
 	// Fallback: try common branch names.
 	for _, candidate := range []string{"refs/heads/main", "refs/heads/master"} {
-		if err := exec.Command("git", "-C", gitDir, "rev-parse", "--verify", candidate).Run(); err == nil {
+		if err := exec.Command("git", "-C", repoPath, "rev-parse", "--verify", candidate).Run(); err == nil {
 			return candidate
 		}
 	}

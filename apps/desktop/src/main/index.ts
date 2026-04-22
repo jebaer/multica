@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, nativeImage } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, nativeImage } from "electron";
 import { homedir } from "os";
 import { join } from "path";
 import { electronApp, optimizer, is } from "@electron-toolkit/utils";
@@ -209,6 +209,17 @@ if (!gotTheLock) {
     ipcMain.handle("window:setImmersive", (_event, immersive: boolean) => {
       if (process.platform !== "darwin") return;
       mainWindow?.setWindowButtonVisibility(!immersive);
+    });
+
+    // IPC: open a native directory picker for selecting local repository paths.
+    ipcMain.handle("dialog:openDirectory", async () => {
+      if (!mainWindow) return null;
+      const result = await dialog.showOpenDialog(mainWindow, {
+        properties: ["openDirectory"],
+        title: "Select local repository",
+      });
+      if (result.canceled || result.filePaths.length === 0) return null;
+      return result.filePaths[0];
     });
 
     createWindow();

@@ -47,6 +47,8 @@ const desktopAPI = {
   },
   /** Open a URL in the default browser */
   openExternal: (url: string) => ipcRenderer.invoke("shell:openExternal", url),
+  /** Open a native directory picker and return the selected path, or null if cancelled */
+  browseDirectory: (): Promise<string | null> => ipcRenderer.invoke("dialog:openDirectory"),
   /** Toggle immersive mode — hide macOS traffic lights for full-screen modals */
   setImmersiveMode: (immersive: boolean) =>
     ipcRenderer.invoke("window:setImmersive", immersive),

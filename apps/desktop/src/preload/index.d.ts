@@ -12,6 +12,8 @@ interface DesktopAPI {
   onInviteOpen: (callback: (invitationId: string) => void) => () => void;
   /** Open a URL in the default browser. */
   openExternal: (url: string) => Promise<void>;
+  /** Open a native directory picker and return the selected path, or null if cancelled. */
+  browseDirectory: () => Promise<string | null>;
   /** Hide macOS traffic lights for full-screen modals; restore when false. */
   setImmersiveMode: (immersive: boolean) => Promise<void>;
 }

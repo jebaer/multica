@@ -20,6 +20,7 @@ type Runtime struct {
 type RepoData struct {
 	URL         string `json:"url"`
 	Description string `json:"description"`
+	LinkType    string `json:"link_type,omitempty"` // "remote" (default) or "local"
 }
 
 // Task represents a claimed task from the server.

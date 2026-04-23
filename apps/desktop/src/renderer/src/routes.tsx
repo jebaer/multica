@@ -123,6 +123,7 @@ export const appRoutes: RouteObject[] = [
             path: "settings",
             element: (
               <SettingsPage
+                onBrowseLocalPath={() => window.desktopAPI.browseDirectory()}
                 extraAccountTabs={[
                   {
                     value: "daemon",

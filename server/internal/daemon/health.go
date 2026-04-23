@@ -50,6 +50,7 @@ type repoCheckoutRequest struct {
 	WorkDir     string `json:"workdir"`
 	AgentName   string `json:"agent_name"`
 	TaskID      string `json:"task_id"`
+	LinkType    string `json:"link_type,omitempty"` // "remote" (default) or "local"
 }
 
 // healthHandler returns the /health HTTP handler. Extracted from serveHealth
@@ -157,9 +158,15 @@ func (d *Daemon) serveHealth(ctx context.Context, ln net.Listener, startedAt tim
 			return
 		}
 
+		linkType := req.LinkType
+		if linkType == "" {
+			linkType = d.workspaceRepoLinkType(req.WorkspaceID, req.URL)
+		}
+
 		result, err := d.repoCache.CreateWorktree(repocache.WorktreeParams{
 			WorkspaceID: req.WorkspaceID,
 			RepoURL:     req.URL,
+			LinkType:    linkType,
 			WorkDir:     req.WorkDir,
 			AgentName:   req.AgentName,
 			TaskID:      req.TaskID,

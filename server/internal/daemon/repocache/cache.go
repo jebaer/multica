@@ -26,6 +26,7 @@ func gitEnv() []string {
 type RepoInfo struct {
 	URL         string
 	Description string
+	LinkType    string // "remote" (default) or "local"
 }
 
 // CachedRepo describes a cached bare clone ready for worktree creation.
@@ -82,6 +83,27 @@ func (c *Cache) Sync(workspaceID string, repos []RepoInfo) error {
 		if repo.URL == "" {
 			continue
 		}
+
+		// Local repos point at an on-disk git directory — skip bare-clone
+		// caching. Validate that the path is absolute and is a git repo.
+		if repo.LinkType == "local" {
+			cleanPath := filepath.Clean(repo.URL)
+			if !filepath.IsAbs(cleanPath) {
+				c.logger.Warn("repo cache: local path must be absolute", "path", repo.URL)
+				if firstErr == nil {
+					firstErr = fmt.Errorf("local path must be absolute: %s", repo.URL)
+				}
+			} else if !IsGitRepo(cleanPath) {
+				c.logger.Warn("repo cache: local path is not a git repo", "path", repo.URL)
+				if firstErr == nil {
+					firstErr = fmt.Errorf("local path is not a git repo: %s", repo.URL)
+				}
+			} else {
+				c.logger.Info("repo cache: local repo verified", "path", repo.URL)
+			}
+			continue
+		}
+
 		barePath := filepath.Join(wsDir, bareDirName(repo.URL))
 
 		repoLock := c.lockForRepo(barePath)
@@ -154,6 +176,19 @@ func isBareRepo(path string) bool {
 	// A bare repo has a HEAD file at the root.
 	_, err := os.Stat(filepath.Join(path, "HEAD"))
 	return err == nil
+}
+
+// IsGitRepo checks if a path is a git repository (bare or with a .git directory).
+func IsGitRepo(path string) bool {
+	if isBareRepo(path) {
+		return true
+	}
+	// A non-bare repo has a .git directory (or .git file for worktrees).
+	info, err := os.Stat(filepath.Join(path, ".git"))
+	if err != nil {
+		return false
+	}
+	return info.IsDir() || info.Mode().IsRegular()
 }
 
 // modernFetchRefspec is the remote-tracking refspec that keeps fetched heads
@@ -278,7 +313,8 @@ func setFetchRefspec(barePath, refspec string) error {
 // WorktreeParams holds inputs for creating a worktree from a cached bare clone.
 type WorktreeParams struct {
 	WorkspaceID string // workspace that owns the repo
-	RepoURL     string // remote URL to look up in the cache
+	RepoURL     string // remote URL to look up in the cache, or local path
+	LinkType    string // "remote" (default) or "local"
 	WorkDir     string // parent directory for the worktree (e.g. task workdir)
 	AgentName   string // for branch naming
 	TaskID      string // for branch naming uniqueness
@@ -294,42 +330,64 @@ type WorktreeResult struct {
 // a git worktree in the agent's working directory. If a worktree already exists
 // at the target path (reused environment), it updates the existing worktree to
 // the latest remote default branch instead of failing.
+//
+// For local repos (LinkType == "local"), the repo URL is treated as an absolute
+// filesystem path to the git repository, and a worktree is created directly
+// from that local repo without using the bare-clone cache.
 func (c *Cache) CreateWorktree(params WorktreeParams) (*WorktreeResult, error) {
-	barePath := c.Lookup(params.WorkspaceID, params.RepoURL)
-	if barePath == "" {
-		return nil, fmt.Errorf("repo not found in cache: %s (workspace: %s)", params.RepoURL, params.WorkspaceID)
+	var barePath string
+
+	if params.LinkType == "local" {
+		// Local repo: validate the path is absolute and use it as the git root.
+		cleanPath := filepath.Clean(params.RepoURL)
+		if !filepath.IsAbs(cleanPath) {
+			return nil, fmt.Errorf("local repo path must be absolute: %s", params.RepoURL)
+		}
+		if !IsGitRepo(cleanPath) {
+			return nil, fmt.Errorf("local path is not a git repo: %s", params.RepoURL)
+		}
+		barePath = cleanPath
+	} else {
+		barePath = c.Lookup(params.WorkspaceID, params.RepoURL)
+		if barePath == "" {
+			return nil, fmt.Errorf("repo not found in cache: %s (workspace: %s)", params.RepoURL, params.WorkspaceID)
+		}
 	}
 
-	// Serialize concurrent CreateWorktree calls on the same bare repo. Git's
+	// Serialize concurrent CreateWorktree calls on the same repo. Git's
 	// own lockfiles (packed-refs.lock, config.lock, worktree admin dirs)
 	// can't tolerate parallel fetch + worktree mutations on the same repo.
 	repoLock := c.lockForRepo(barePath)
 	repoLock.Lock()
 	defer repoLock.Unlock()
 
-	// Fetch latest from origin. This also migrates the bare cache's refspec
-	// to the modern remote-tracking layout on first run, so subsequent fetches
-	// never collide with the refs/heads/agent/* branches that worktree creation
-	// locks in this same bare repo.
-	if err := gitFetch(barePath); err != nil {
-		// Non-fatal: preserve cached state and continue, but make the warning
-		// loud enough that it's findable in the daemon log. The agent will
-		// receive an older snapshot than the remote head.
-		c.logger.Warn("repo checkout: fetch failed, agent will see possibly stale code",
-			"url", params.RepoURL,
-			"error", err,
-		)
+	isLocal := params.LinkType == "local"
+
+	if !isLocal {
+		// Fetch latest from origin. This also migrates the bare cache's refspec
+		// to the modern remote-tracking layout on first run, so subsequent fetches
+		// never collide with the refs/heads/agent/* branches that worktree creation
+		// locks in this same bare repo.
+		if err := gitFetch(barePath); err != nil {
+			// Non-fatal: preserve cached state and continue, but make the warning
+			// loud enough that it's findable in the daemon log. The agent will
+			// receive an older snapshot than the remote head.
+			c.logger.Warn("repo checkout: fetch failed, agent will see possibly stale code",
+				"url", params.RepoURL,
+				"error", err,
+			)
+		}
 	}
 
-	// Determine the default branch to base the worktree on. getRemoteDefaultBranch
-	// walks origin/HEAD → origin/main, origin/master → bare-HEAD hint into
-	// origin/<same> → single-entry scan of origin/* → bare HEAD (only if
-	// origin/* is empty). Reaching "" here means the cache is in a state we
-	// refuse to guess from (no origin/HEAD, no main/master, bare HEAD doesn't
-	// match any origin/* entry, and origin/* has multiple candidates).
-	baseRef := getRemoteDefaultBranch(barePath)
+	// Determine the default branch to base the worktree on.
+	var baseRef string
+	if isLocal {
+		baseRef = getLocalDefaultBranch(barePath)
+	} else {
+		baseRef = getRemoteDefaultBranch(barePath)
+	}
 	if baseRef == "" {
-		return nil, fmt.Errorf("cannot resolve default branch for %s: bare cache at %s has no usable refs (origin/* is empty or ambiguous and bare HEAD has no match). The cache may be corrupted; delete it and retry", params.RepoURL, barePath)
+		return nil, fmt.Errorf("cannot resolve default branch for %s at %s", params.RepoURL, barePath)
 	}
 
 	// Build branch name: agent/{sanitized-name}/{short-task-id}
@@ -506,8 +564,33 @@ func updateExistingWorktree(worktreePath, branchName, baseRef string) (string, e
 //     back to a stale snapshot when the cache has real remote-tracking refs
 //     but we just can't pick between them.
 //
-// Returns "" only when none of the above resolve — which the caller treats
-// as a hard error with a clear "cache has no usable refs" message.
+// getLocalDefaultBranch resolves the default branch for a local (non-bare) git
+// repository by reading HEAD. Returns the symbolic ref (e.g. "refs/heads/main")
+// or "" if HEAD cannot be resolved.
+func getLocalDefaultBranch(repoPath string) string {
+	// Validate the path is absolute to prevent path traversal.
+	if !filepath.IsAbs(repoPath) {
+		return ""
+	}
+	// Read the symbolic ref from HEAD.
+	if out, err := exec.Command("git", "-C", repoPath, "symbolic-ref", "HEAD").Output(); err == nil {
+		ref := strings.TrimSpace(string(out))
+		if ref != "" {
+			if err := exec.Command("git", "-C", repoPath, "rev-parse", "--verify", ref).Run(); err == nil {
+				return ref
+			}
+		}
+	}
+	// Fallback: try common branch names.
+	for _, candidate := range []string{"refs/heads/main", "refs/heads/master"} {
+		if err := exec.Command("git", "-C", repoPath, "rev-parse", "--verify", candidate).Run(); err == nil {
+			return candidate
+		}
+	}
+	return ""
+}
+
+// getRemoteDefaultBranch resolves the default branch for a bare-clone cache.
 func getRemoteDefaultBranch(barePath string) string {
 	// 1) Primary: refs/remotes/origin/HEAD set by `git remote set-head
 	//    origin --auto` during ensureRemoteTrackingLayout. Verify the

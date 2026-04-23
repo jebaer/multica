@@ -33,9 +33,11 @@ export interface ExtraSettingsTab {
 interface SettingsPageProps {
   /** Additional tabs injected by platform (e.g. desktop daemon settings) */
   extraAccountTabs?: ExtraSettingsTab[];
+  /** Desktop-only: open a system directory picker. Passed through to RepositoriesTab. */
+  onBrowseLocalPath?: () => Promise<string | null>;
 }
 
-export function SettingsPage({ extraAccountTabs }: SettingsPageProps = {}) {
+export function SettingsPage({ extraAccountTabs, onBrowseLocalPath }: SettingsPageProps = {}) {
   const workspaceName = useCurrentWorkspace()?.name;
 
   return (
@@ -81,7 +83,7 @@ export function SettingsPage({ extraAccountTabs }: SettingsPageProps = {}) {
           <TabsContent value="appearance"><AppearanceTab /></TabsContent>
           <TabsContent value="tokens"><TokensTab /></TabsContent>
           <TabsContent value="workspace"><WorkspaceTab /></TabsContent>
-          <TabsContent value="repositories"><RepositoriesTab /></TabsContent>
+          <TabsContent value="repositories"><RepositoriesTab onBrowseLocalPath={onBrowseLocalPath} /></TabsContent>
           <TabsContent value="members"><MembersTab /></TabsContent>
           {extraAccountTabs?.map((tab) => (
             <TabsContent key={tab.value} value={tab.value}>{tab.content}</TabsContent>

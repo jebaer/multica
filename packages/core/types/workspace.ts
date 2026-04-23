@@ -1,8 +1,12 @@
 export type MemberRole = "owner" | "admin" | "member";
 
+export type RepoLinkType = "remote" | "local";
+
 export interface WorkspaceRepo {
   url: string;
   description: string;
+  /** Distinguishes remote git URLs from local filesystem paths. Defaults to "remote". */
+  link_type?: RepoLinkType;
 }
 
 export interface Workspace {

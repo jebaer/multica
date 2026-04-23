@@ -29,7 +29,7 @@ type workspaceState struct {
 	workspaceID     string
 	runtimeIDs      []string
 	reposVersion    string // stored for future use: skip refresh when version unchanged
-	allowedRepoURLs map[string]struct{}
+	allowedRepoURLs map[string]string // URL → link_type ("remote" or "local")
 	lastRepoSyncErr string
 	repoRefreshMu   sync.Mutex
 }
@@ -258,13 +258,17 @@ func newWorkspaceState(workspaceID string, runtimeIDs []string, reposVersion str
 	}
 }
 
-func repoAllowlist(repos []RepoData) map[string]struct{} {
-	allowed := make(map[string]struct{}, len(repos))
+func repoAllowlist(repos []RepoData) map[string]string {
+	allowed := make(map[string]string, len(repos))
 	for _, repo := range repos {
 		if repo.URL == "" {
 			continue
 		}
-		allowed[repo.URL] = struct{}{}
+		linkType := repo.LinkType
+		if linkType == "" {
+			linkType = "remote"
+		}
+		allowed[repo.URL] = linkType
 	}
 	return allowed
 }
@@ -286,6 +290,22 @@ func (d *Daemon) workspaceRepoAllowed(workspaceID, repoURL string) bool {
 	}
 	_, allowed := ws.allowedRepoURLs[repoURL]
 	return allowed
+}
+
+// workspaceRepoLinkType returns the link_type for a repo URL in a workspace.
+// Returns "remote" if the URL is not found or has no explicit link_type.
+func (d *Daemon) workspaceRepoLinkType(workspaceID, repoURL string) string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	ws, ok := d.workspaces[workspaceID]
+	if !ok {
+		return "remote"
+	}
+	lt, ok := ws.allowedRepoURLs[repoURL]
+	if !ok || lt == "" {
+		return "remote"
+	}
+	return lt
 }
 
 func (d *Daemon) workspaceLastRepoSyncErr(workspaceID string) string {
@@ -343,12 +363,31 @@ func (d *Daemon) ensureRepoReady(ctx context.Context, workspaceID, repoURL strin
 		return fmt.Errorf("workspace is not watched by this daemon: %s", workspaceID)
 	}
 
+	// Local repos don't use the bare-clone cache. Just verify the path
+	// exists and is a git repo on the local filesystem.
+	if d.workspaceRepoLinkType(workspaceID, repoURL) == "local" {
+		if !repocache.IsGitRepo(repoURL) {
+			return fmt.Errorf("local repo path is not a valid git repository: %s", repoURL)
+		}
+		return nil
+	}
+
 	if d.workspaceRepoAllowed(workspaceID, repoURL) && d.repoCache.Lookup(workspaceID, repoURL) != "" {
 		return nil
 	}
 
 	ws.repoRefreshMu.Lock()
 	defer ws.repoRefreshMu.Unlock()
+
+	// Re-check after acquiring the lock — another goroutine may have already
+	// refreshed. Also handle the local-repo case: the refresh may have
+	// changed the link_type.
+	if d.workspaceRepoLinkType(workspaceID, repoURL) == "local" {
+		if !repocache.IsGitRepo(repoURL) {
+			return fmt.Errorf("local repo path is not a valid git repository: %s", repoURL)
+		}
+		return nil
+	}
 
 	if d.workspaceRepoAllowed(workspaceID, repoURL) && d.repoCache.Lookup(workspaceID, repoURL) != "" {
 		return nil
@@ -361,6 +400,14 @@ func (d *Daemon) ensureRepoReady(ctx context.Context, workspaceID, repoURL strin
 
 	if !d.workspaceRepoAllowed(workspaceID, repoURL) {
 		return ErrRepoNotConfigured
+	}
+
+	// After refresh, the repo may now be local.
+	if d.workspaceRepoLinkType(workspaceID, repoURL) == "local" {
+		if !repocache.IsGitRepo(repoURL) {
+			return fmt.Errorf("local repo path is not a valid git repository: %s", repoURL)
+		}
+		return nil
 	}
 
 	d.syncWorkspaceRepos(workspaceID, resp.Repos)
@@ -1503,7 +1550,7 @@ func mergeUsage(a, b map[string]agent.TokenUsage) map[string]agent.TokenUsage {
 func repoDataToInfo(repos []RepoData) []repocache.RepoInfo {
 	info := make([]repocache.RepoInfo, len(repos))
 	for i, r := range repos {
-		info[i] = repocache.RepoInfo{URL: r.URL, Description: r.Description}
+		info[i] = repocache.RepoInfo{URL: r.URL, Description: r.Description, LinkType: r.LinkType}
 	}
 	return info
 }
@@ -1514,7 +1561,7 @@ func convertReposForEnv(repos []RepoData) []execenv.RepoContextForEnv {
 	}
 	result := make([]execenv.RepoContextForEnv, len(repos))
 	for i, r := range repos {
-		result[i] = execenv.RepoContextForEnv{URL: r.URL, Description: r.Description}
+		result[i] = execenv.RepoContextForEnv{URL: r.URL, Description: r.Description, LinkType: r.LinkType}
 	}
 	return result
 }
